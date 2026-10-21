@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.6/dist/purify.min.js"></script>
 <style>
 :root{--pri:#92400E;--pri2:#A16207;--acc:#6366F1;--bg:#FFFBEB;--fg:#0F172A;--card:#fff;--mut:#F8F3F0;--mf:#475569;--bd:#F1E8E2;--ok:#15803D;--bad:#DC2626;--r:20px;--sh:0 10px 30px -12px rgba(146,64,14,.25);--hf:'Fraunces',Georgia,serif;--bf:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif}
 *{box-sizing:border-box;margin:0}
@@ -198,8 +199,70 @@ main{display:grid;grid-template-columns:minmax(340px,480px) 1fr;gap:1.4rem;align
 <script>
 /* ── Supabase client ─────────────────────────────────────── */
 const SUPABASE_URL = 'https://ewrfjagecrzslpwrwcxh.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV3cmZqYWdlY3J6c2xwd3J3Y3hoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI1MDg1NTIsImV4cCI6MjEwODA4NDU1Mn0.Y6BdaBkbaFvl05BzNPqKvDTwFq_-oEUIejKEIez5Pqs';
-const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+// Browser code may contain only a Supabase publishable/anon key. NEVER put a
+// service_role key or a secret key in this file. Database security comes from RLS.
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhbGciOiJIUzI1NiIsInJlZiI6ImV3cmZqYWdlY3J6c2xwd3J3Y3hoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI1MDg1NTIsImV4cCI6MjEwODA4NDU1Mn0.Y6BdaBkbaFvl05BzNPqKvDTwFq_-oEUIejKEIez5Pqs';
+if (!window.supabase || !window.DOMPurify) {
+  document.body.textContent = 'Security libraries could not load. Check your internet connection and reload.';
+  throw new Error('Required security libraries failed to load');
+}
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
+});
+
+// Strictly sanitize diary HTML before it is stored or rendered. Only formatting
+// elements and locally embedded raster images are allowed. Active content and
+// external image URLs are removed. RLS is still required on the Supabase database.
+const DIARY_TAGS = ['p','br','div','span','b','strong','i','em','u','s','strike',
+  'h1','h2','h3','blockquote','ul','ol','li','img'];
+const DIARY_ATTRS = ['style','src','alt','title'];
+const SAFE_STYLE_PROPS = new Set(['color','background-color','font-family','font-size',
+  'font-weight','font-style','text-decoration','text-align']);
+function sanitizeDiaryHtml(dirtyHtml) {
+  const clean = DOMPurify.sanitize(String(dirtyHtml || ''), {
+    ALLOWED_TAGS: DIARY_TAGS,
+    ALLOWED_ATTR: DIARY_ATTRS,
+    ALLOW_DATA_ATTR: false,
+    FORBID_TAGS: ['script','style','iframe','object','embed','form','input','svg','math'],
+    FORBID_ATTR: ['srcset','formaction','onerror','onload']
+  });
+  const box = document.createElement('div');
+  box.innerHTML = clean;
+  box.querySelectorAll('*').forEach(el => {
+    if (el.hasAttribute('style')) {
+      const declarations = [];
+      for (const part of el.getAttribute('style').split(';')) {
+        const colon = part.indexOf(':');
+        if (colon < 1) continue;
+        const prop = part.slice(0, colon).trim().toLowerCase();
+        const value = part.slice(colon + 1).trim();
+        if (!SAFE_STYLE_PROPS.has(prop) || !value || /url\s*\(|expression|@import|javascript:|var\s*\(/i.test(value)) continue;
+        let valid = false;
+        if (prop === 'color' || prop === 'background-color') valid = /^(#[0-9a-f]{3,8}|rgba?\([0-9.,%\s]+\)|hsla?\([0-9.,%\s]+\)|[a-z]{1,20})$/i.test(value);
+        else if (prop === 'font-size') valid = /^(\d+(\.\d+)?(px|pt|em|rem|%)|xx-small|x-small|small|medium|large|x-large|xx-large)$/i.test(value);
+        else if (prop === 'font-family') valid = /^(inter|georgia|fraunces|courier new|comic sans ms|brush script mt|serif|sans-serif|monospace)(\s*,\s*(inter|georgia|fraunces|courier new|comic sans ms|brush script mt|serif|sans-serif|monospace))*$/i.test(value.replaceAll('"','').replaceAll("'",''));
+        else if (prop === 'font-weight') valid = /^(normal|bold|[1-9]00)$/i.test(value);
+        else if (prop === 'font-style') valid = /^(normal|italic|oblique)$/i.test(value);
+        else if (prop === 'text-decoration') valid = /^(none|underline|line-through|overline)(\s+(underline|line-through|overline))*$/i.test(value);
+        else if (prop === 'text-align') valid = /^(left|right|center|justify|start|end)$/i.test(value);
+        if (valid) declarations.push(`${prop}: ${value}`);
+      }
+      if (declarations.length) el.setAttribute('style', declarations.join('; '));
+      else el.removeAttribute('style');
+    }
+    if (el.tagName === 'IMG') {
+      const src = el.getAttribute('src') || '';
+      if (!/^data:image\/(jpeg|png|gif|webp);base64,[a-z0-9+/=]+$/i.test(src)) {
+        el.remove();
+      } else {
+        el.removeAttribute('width'); el.removeAttribute('height');
+        el.setAttribute('loading', 'lazy');
+        el.setAttribute('decoding', 'async');
+      }
+    }
+  });
+  return box.innerHTML;
+}
 
 /* ── helpers ─────────────────────────────────────────────── */
 const $ = s => document.querySelector(s);
@@ -299,7 +362,7 @@ async function loadEntries(uid) {
     .eq('user_id', uid);
   if (error) throw error;
   const map = {};
-  (rows || []).forEach(r => { map[r.entry_date] = r.content; });
+  (rows || []).forEach(r => { map[r.entry_date] = sanitizeDiaryHtml(r.content); });
   return map;
 }
 
@@ -330,7 +393,7 @@ async function enter(authUser) {
     }, 700);
   } catch (err) {
     console.error(err);
-    toast('Failed to load your diary: ' + (err.message || err));
+    toast('Could not load your diary. Please try again.');
     await sb.auth.signOut();
   }
 }
@@ -414,7 +477,7 @@ $('#tdy').onclick = () => { view = new Date(); pick(todayK()); };
 function pick(k) {
   commit();
   sel = k;
-  ed.innerHTML = data[k] || '';
+  ed.innerHTML = sanitizeDiaryHtml(data[k] || '');
   $('#dt').textContent = fmt(k);
   $('#editor').classList.remove('on');
   void $('#editor').offsetWidth;
@@ -432,7 +495,7 @@ async function commit() {
 async function save(quiet) {
   if (!sel || !user) return;
   const empty = !ed.innerText.trim() && !ed.querySelector('img');
-  const content = empty ? '' : ed.innerHTML;
+  const content = empty ? '' : sanitizeDiaryHtml(ed.innerHTML);
 
   try {
     if (empty) {
@@ -461,7 +524,7 @@ async function save(quiet) {
     if (!quiet) toast(empty ? 'Empty entry removed' : 'Entry saved ✓');
   } catch (err) {
     console.error(err);
-    toast('Save failed: ' + (err.message || err));
+    toast('Save failed. Please check your connection and try again.');
   }
 }
 
